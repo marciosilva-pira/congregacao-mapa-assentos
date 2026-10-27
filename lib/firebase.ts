@@ -1,15 +1,17 @@
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBJSyDFFc0wiODLX6pwYvceSwWHtVoLTu8",
-  authDomain: "cadeiras-app-2d9e0.firebaseapp.com",
-  projectId: "cadeiras-app-2d9e0",
-  storageBucket: "cadeiras-app-2d9e0.firebasestorage.app",
-  messagingSenderId: "344523462451",
-  appId: "1:344523462451:web:ab8f0bd30666a262b65046",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyDZe5449ljmidKPfh8coJBhgO8czRBlMGM",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "congregacao-mapa-assentos.firebaseapp.com",
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "congregacao-mapa-assentos",
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "congregacao-mapa-assentos.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "256371157260",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:256371157260:web:4707b513805d61ad984129"
 };
 
-const app = initializeApp(firebaseConfig);
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
+export const auth = getAuth(app);
 export const db = getFirestore(app);

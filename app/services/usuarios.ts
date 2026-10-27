@@ -1,22 +1,22 @@
-import { collection, getDocs, addDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
+// Função para autenticar o utilizador/congregação
 export async function loginUsuario(email: string, senha: string) {
-  const snapshot = await getDocs(collection(db, "usuarios"));
+  const userCredential = await signInWithEmailAndPassword(auth, email, senha);
+  const user = userCredential.user;
 
-  const userDoc = snapshot.docs.find(
-    (doc) => doc.data().email.toLowerCase() === email.toLowerCase()
-  );
+  // Extrai a congregação a partir do e-mail (ex: "LSPIRACICABA-98145@gmail.com" -> "LSPIRACICABA-98145")
+  const congregacaoId = user.email ? user.email.split("@")[0] : "";
 
-  if (!userDoc) throw new Error("Usuário inválido");
-
-  const data = userDoc.data();
-
-  if (data.senha !== senha) throw new Error("Senha inválida");
-
-  return data;
+  return {
+    uid: user.uid,
+    email: user.email,
+    congregacaoId,
+  };
 }
 
-export async function criarUsuario(data: any) {
-  return addDoc(collection(db, "usuarios"), data);
+// Função para terminar a sessão
+export async function logoutUsuario() {
+  return signOut(auth);
 }

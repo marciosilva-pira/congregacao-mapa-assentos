@@ -1,11 +1,15 @@
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
-export async function carregarMapa() {
-  const snap = await getDoc(doc(db, "config", "mapa"));
+// Carrega o mapa/configuração de uma congregação específica
+export async function carregarMapa(congregacaoId: string) {
+  if (!congregacaoId) return {};
+  const snap = await getDoc(doc(db, "mapas", congregacaoId));
   return snap.exists() ? snap.data() : {};
 }
 
-export async function salvarMapa(mapa: any) {
-  return setDoc(doc(db, "config", "mapa"), mapa);
+// Salva o mapa/configuração vinculado ao ID da congregação
+export async function salvarMapa(congregacaoId: string, mapa: any) {
+  if (!congregacaoId) return;
+  return setDoc(doc(db, "mapas", congregacaoId), mapa, { merge: true });
 }

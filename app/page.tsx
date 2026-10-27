@@ -1,17 +1,13 @@
 "use client";
 
-console.log("PAGE CARREGOU"); // ✅ COLOQUE AQUI
+console.log("PAGE CARREGOU");
 
 import { useState, useEffect, useRef } from "react";
-
 
 import Login from "./components/Login";
 import Menu from "./components/Menu";
 import Cadastro from "./components/Cadastro";
 
-
-
-// ✅ ESTADOS DE LOGIN
 const inputStyle = {
   width: "100%",
   padding: 10,
@@ -44,9 +40,8 @@ const btnSecondary = {
   cursor: "pointer"
 };
 
-
-import { db } from "@/lib/firebase";
-
+import { db, auth } from "@/lib/firebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import {
   collection,
   addDoc,
@@ -56,14 +51,25 @@ import {
   getDoc,
   deleteDoc,
   onSnapshot,
+  query,
+  where
 } from "firebase/firestore";
 
 const COLS = 22;
 const ROWS = 6;
 const GRID_COLS = 25;
 
-export default function Home() {
+// Função utilitária para converter fotos em Base64
+function converterParaBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+  });
+}
 
+export default function Home() {
   const containerRef = useRef<any>(null);
   const [tela, setTela] = useState("login");
 
@@ -78,6 +84,8 @@ export default function Home() {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
 
+  // Obter ID da congregação a partir do e-mail
+  const congregacaoId = usuario?.email ? usuario.email.split("@")[0] : "";
 
   useEffect(() => {
     if (usuario) {
@@ -87,8 +95,6 @@ export default function Home() {
     }
   }, [usuario]);
 
-
-
   useEffect(() => {
     const user = localStorage.getItem("usuario");
     if (user) {
@@ -96,34 +102,26 @@ export default function Home() {
     }
   }, []);
 
-
   useEffect(() => {
     async function pegarIP() {
       try {
         console.log("🔄 Buscando IP...");
-
         const res = await fetch("https://api.ipify.org?format=json");
         const data = await res.json();
-
         console.log("✅ IP detectado:", data.ip);
-
         setIpCamera(data.ip || "");
-
       } catch (err) {
         console.error("❌ ERRO AO PEGAR IP:", err);
       }
     }
-
     pegarIP();
   }, []);
-
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!containerRef.current) return;
 
     const el = containerRef.current;
-
     let startY = 0;
 
     const handleTouchStart = (e: any) => {
@@ -132,7 +130,6 @@ export default function Home() {
 
     const handleTouchMove = (e: any) => {
       const currentY = e.touches[0].clientY;
-
       if (el.scrollTop === 0 && currentY > startY) {
         e.preventDefault();
       }
@@ -147,19 +144,9 @@ export default function Home() {
     };
   }, []);
 
-
-
-  // cadastro
-  const [novoNome, setNovoNome] = useState("");
-  const [novoEmail, setNovoEmail] = useState("");
-  const [novaSenha, setNovaSenha] = useState("");
-  const [novoAdmin, setNovoAdmin] = useState(false);
-
-
   const [selecionada, setSelecionada] = useState<string | null>(null);
   const [mapa, setMapa] = useState<{ [key: number]: string }>({});
-  const [fotos, setFotos] = useState<{ id: string; url: string }[]>([]);
-
+  const [fotos, setFotos] = useState<{ id: string; url: string; nome: string }[]>([]);
 
   const [carregando, setCarregando] = useState(false);
   const [progresso, setProgresso] = useState(0);
@@ -176,48 +163,23 @@ export default function Home() {
 
     handleResize();
     window.addEventListener("resize", handleResize);
-
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // ✅ CARREGAR MAPA
-
+  // ✅ CARREGAR MAPA DA CONGREGAÇÃO
   async function carregarMapaFirebase() {
-    const snap = await getDoc(doc(db, "config", "mapa"));
+    if (!congregacaoId) return;
+    const snap = await getDoc(doc(db, "mapas", congregacaoId));
     if (snap.exists()) setMapa(snap.data());
+    else setMapa({});
   }
 
-  /*
-    useEffect(() => {
-      async function carregarMapa() {
-        const snap = await getDoc(doc(db, "config", "mapa"));
-        if (snap.exists()) setMapa(snap.data());
-      }
-      carregarMapa();
-    }, []);
-  */
-
-  // ✅ tempo real
+  // ✅ ESCUTAR FOTOS DA CONGREGAÇÃO EM TEMPO REAL
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "fotos"), (snapshot) => {
-      const lista = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        url: doc.data().url,
-        nome: doc.data().nome,
-      }));
+    if (!congregacaoId) return;
 
-      lista.sort((a, b) => a.nome.localeCompare(b.nome));
-
-      setFotos(lista);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // ✅ carregar inicial
-  useEffect(() => {
-    async function carregarFotosBanco() {
-      const snapshot = await getDocs(collection(db, "fotos"));
+    const q = query(collection(db, "fotos"), where("congregacaoId", "==", congregacaoId));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       const lista = snapshot.docs.map((doc) => ({
         id: doc.id,
         url: doc.data().url,
@@ -225,63 +187,48 @@ export default function Home() {
       }));
 
       lista.sort((a, b) => a.nome.localeCompare(b.nome));
-
       setFotos(lista);
-    }
-
-    carregarFotosBanco();
-  }, []);
-
-
-  async function fazerLogin() {
-    const snapshot = await getDocs(collection(db, "usuarios"));
-
-    // ✅ 1. Procurar usuário pelo email (ignora maiúsculo/minúsculo)
-    const userDoc = snapshot.docs.find(doc => {
-      const data = doc.data();
-      return data.email.toLowerCase() === email.toLowerCase();
     });
 
-    // ❌ Se não encontrou email
-    if (!userDoc) {
-      alert("Usuário inválido");
-      return;
+    return () => unsubscribe();
+  }, [congregacaoId]);
+
+  // ✅ FAZER LOGIN
+  async function fazerLoginCustom() {
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, senha);
+      const user = userCredential.user;
+
+      const userObj = {
+        id: user.uid,
+        email: user.email,
+        admin: true,
+      };
+
+      setUsuario(userObj);
+      localStorage.setItem("usuario", JSON.stringify(userObj));
+      setTela("menu");
+    } catch (error: any) {
+      alert("Falha no login: " + error.message);
     }
-
-    const data = userDoc.data();
-
-    setUsuario({
-      id: userDoc.id,
-      ...userDoc.data()
-    });
-
-
-    // ❌ Se senha está errada
-    if (data.senha !== senha) {
-      alert("Senha inválida");
-      return;
-    }
-
-    // ✅ Login OK
-    setUsuario(data);
-    setTela("menu");
   }
-
 
   async function excluirFoto(id: string) {
     if (!confirm("Deseja excluir esta foto do Banco de Dados?")) return;
     await deleteDoc(doc(db, "fotos", id));
   }
 
+  // ✅ SALVAR MAPA DA CONGREGAÇÃO
   async function salvarMapaFirebase() {
-    await setDoc(doc(db, "config", "mapa"), mapa);
-    alert("✅ Mapa salvo no banco!");
+    if (!congregacaoId) {
+      alert("Nenhuma congregação identificada.");
+      return;
+    }
+    await setDoc(doc(db, "mapas", congregacaoId), mapa);
+    alert("✅ Mapa da congregação salvo no banco!");
   }
 
-
   async function irParaPreset(numero: number) {
-    console.log("📸 Enviando preset:", numero);
-
     try {
       const res = await fetch("/api/preset", {
         method: "POST",
@@ -290,7 +237,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           preset: numero,
-          ip: ipCamera // ✅ AGORA ESTÁ ENVIANDO O IP
+          ip: ipCamera
         }),
       });
 
@@ -300,31 +247,22 @@ export default function Home() {
       }
 
       const data = await res.json();
-
-      if (data.ok) {
-        //alert(`✅ Comando enviado para a câmera (Preset ${numero})`);
-      } else {
+      if (!data.ok) {
         alert("❌ API respondeu, mas não executou o comando");
       }
-
-      console.log("✅ Resposta da API:", data);
     } catch (err) {
       alert("❌ Falha ao comunicar com a API da câmera");
-      console.error("Erro:", err);
     }
   }
 
-
   async function irParaPresetCameraPalco(numero: number) {
     console.log("📸 Camera Palco preset:", numero);
-
-    // FUTURO:
-    // await fetch("/api/preset2", {...})
   }
 
+  // ✅ CARREGAR FOTOS EM BASE64 (GRATUITO)
   async function carregarFotos(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
-    if (!files) return;
+    if (!files || !congregacaoId) return;
 
     setCarregando(true);
     setProgresso(0);
@@ -333,32 +271,19 @@ export default function Home() {
       a.name.localeCompare(b.name)
     );
 
-    const uploads = arquivosOrdenados.map(async (file, index) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("upload_preset", "upload_cadeiras");
+    for (let index = 0; index < arquivosOrdenados.length; index++) {
+      const file = arquivosOrdenados[index];
+      const base64 = await converterParaBase64(file);
 
-      const res = await fetch(
-        "https://api.cloudinary.com/v1_1/dous0lse8/image/upload",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-      const data = await res.json();
-
-      if (data.secure_url) {
-        await addDoc(collection(db, "fotos"), {
-          url: data.secure_url,
-          nome: file.name,
-        });
-      }
+      await addDoc(collection(db, "fotos"), {
+        congregacaoId: congregacaoId,
+        url: base64,
+        nome: file.name,
+        criadoEm: new Date(),
+      });
 
       setProgresso(Math.round(((index + 1) / arquivosOrdenados.length) * 100));
-    });
-
-    await Promise.all(uploads);
+    }
 
     setCarregando(false);
   }
@@ -370,19 +295,13 @@ export default function Home() {
 
   function clicarCadeira(num: number) {
     const novo = { ...mapa };
+    const temPessoa = mapa[num];
 
-    const temPessoa = mapa[num]; // ✅ verifica se tem foto na cadeira
-
-    // 👉 Só dispara câmera se:
-    // 1. NÃO está adicionando foto
-    // 2. E a cadeira TEM alguém
     if (!selecionada && temPessoa) {
-      //irParaPreset(num);
       irParaPreset(1);
       return;
     }
 
-    // comportamento atual (colocar foto)
     if (selecionada) {
       novo[num] = selecionada;
       setMapa(novo);
@@ -390,10 +309,7 @@ export default function Home() {
     }
   }
 
-
-
   function removerFotoCadeira(num: number) {
-
     if (
       !window.confirm(
         "Deseja realmente remover esta foto da cadeira?\n\nA foto continuará cadastrada no banco de dados."
@@ -407,9 +323,6 @@ export default function Home() {
     setMapa(novo);
   }
 
-
-
-
   const cadeiras = [];
 
   for (let i = 0; i < ROWS; i++) {
@@ -421,8 +334,6 @@ export default function Home() {
           <div
             key={`gap-${i}-${j}`}
             style={{
-
-
               width: "100%",
               height: "100%",
             }}
@@ -465,127 +376,92 @@ export default function Home() {
           <div
             tabIndex={-1}
             onMouseDown={(e) => e.preventDefault()}
-
             onClick={() => {
-
-              // ✅ 1. Se tem foto selecionada e cadeira vazia → colocar
               if (selecionada && !mapa[cadeiraNum]) {
-                const novo = { ...mapa }
-                novo[cadeiraNum] = selecionada
-                setMapa(novo)
-                setSelecionada(null)
-                return
+                const novo = { ...mapa };
+                novo[cadeiraNum] = selecionada;
+                setMapa(novo);
+                setSelecionada(null);
+                return;
               }
-
-              // ✅ 2. Se NÃO tem seleção e tem pessoa → câmera
-              // if (!selecionada && mapa[cadeiraNum]) {
-              // vou trocar se NÃO TEM seleção, mesmo que a cadeira esteja vazia, vai enviar o preset
 
               if (!selecionada) {
-
-                console.log("cadeiraNum:", cadeiraNum);
-                console.log("mapa[cadeiraNum]:", mapa[cadeiraNum]);
-                console.log("selecionada:", selecionada);
-
-                irParaPreset(cadeiraNum)
-                //irParaPreset(54)
+                irParaPreset(cadeiraNum);
               }
             }}
-
-
-            // ✅ INÍCIO do arrastar
             onPointerDown={() => {
-
               if (selecionada) return;
               if (!mapa[cadeiraNum]) return;
 
               if (dragCadeira === cadeiraNum) {
-                setDragCadeira(null)
-                setIsDragging(false)
-                return
+                setDragCadeira(null);
+                setIsDragging(false);
+                return;
               }
 
               const timeout = setTimeout(() => {
-                setDragCadeira(cadeiraNum)
-                setIsDragging(true)
+                setDragCadeira(cadeiraNum);
+                setIsDragging(true);
               }, 600);
 
               setDragTimeout(timeout);
             }}
-
             onPointerLeave={() => {
               if (dragTimeout) {
                 clearTimeout(dragTimeout);
                 setDragTimeout(null);
               }
             }}
-
             onPointerCancel={() => {
               if (dragTimeout) {
                 clearTimeout(dragTimeout);
                 setDragTimeout(null);
               }
             }}
-
-
-
-
             onPointerUp={() => {
-
-              // ✅ cancela o timer (se só clicou rápido)
               if (dragTimeout) {
                 clearTimeout(dragTimeout);
                 setDragTimeout(null);
               }
 
-              // ✅ BLOQUEIA o drag se estiver no modo colocar foto
               if (selecionada) {
                 setDragCadeira(null);
                 setIsDragging(false);
                 return;
               }
 
-              // ✅ arrasto (se realmente ativou)
               if (dragCadeira !== null && dragCadeira !== cadeiraNum) {
-                const novo = { ...mapa }
+                const novo = { ...mapa };
 
                 if (!mapa[cadeiraNum]) {
-                  novo[cadeiraNum] = mapa[dragCadeira]
-                  delete novo[dragCadeira]
-                  setMapa(novo)
+                  novo[cadeiraNum] = mapa[dragCadeira];
+                  delete novo[dragCadeira];
+                  setMapa(novo);
                 }
 
-                setDragCadeira(null)
+                setDragCadeira(null);
               }
 
-              setIsDragging(false)
+              setIsDragging(false);
             }}
-
             onContextMenu={(e) => {
-              // ✅ Bloqueia no celular/tablet (toque)
               if (navigator.maxTouchPoints > 0) return;
-
-              e.preventDefault()
-              removerFotoCadeira(cadeiraNum)
+              e.preventDefault();
+              removerFotoCadeira(cadeiraNum);
             }}
-
-
             style={{
               width: "100%",
               maxWidth: isMobile ? 50 : 70,
               aspectRatio: "1",
               background: "#2B2B2B",
-
               border:
                 dragCadeira === cadeiraNum
                   ? "3px solid red"
                   : "1px solid #555",
-
               boxShadow:
                 dragCadeira === cadeiraNum
                   ? "0 0 10px red"
                   : "none",
-
               position: "relative",
               cursor: "pointer",
               borderRadius: 6,
@@ -596,9 +472,7 @@ export default function Home() {
               touchAction: isDragging ? "none" : "auto",
               opacity: dragCadeira === cadeiraNum ? 0.5 : 1
             }}
-
           >
-
             {foto && (
               <img
                 src={foto}
@@ -606,14 +480,12 @@ export default function Home() {
                   width: "100%",
                   height: "100%",
                   objectFit: "cover",
-                  pointerEvents: "none" // ✅ ESSENCIAL
+                  pointerEvents: "none"
                 }}
               />
             )}
 
-
             {foto && (
-
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -623,7 +495,7 @@ export default function Home() {
                   position: "absolute",
                   top: -2,
                   right: -2,
-                  background: "#1f1f1f", // ✅ mantém a cor escura
+                  background: "#1f1f1f",
                   color: "white",
                   border: "none",
                   borderRadius: "50%",
@@ -640,21 +512,12 @@ export default function Home() {
               >
                 ✕
               </button>
-
             )}
-
-
-
-
           </div>
         </div>
       );
     }
   }
-
-
-  console.log("TELA ATUAL:", tela);
-  console.log("USUARIO:", usuario);
 
   if (!tela) return null;
 
@@ -663,6 +526,7 @@ export default function Home() {
       <Login
         onLogin={(user: any) => {
           setUsuario(user);
+          localStorage.setItem("usuario", JSON.stringify(user));
           setTela("menu");
         }}
       />
@@ -673,10 +537,8 @@ export default function Home() {
     return (
       <Menu
         usuario={usuario}
-
-        ipCamera={ipCamera}           // ✅ AQUI
+        ipCamera={ipCamera}
         setIpCamera={setIpCamera}
-
         onIrPainel={async () => {
           await carregarMapaFirebase();
           setTela("painel");
@@ -684,12 +546,12 @@ export default function Home() {
         onIrCadastro={() => setTela("cadastro")}
         onSair={() => {
           setUsuario(null);
+          localStorage.removeItem("usuario");
           setTela("login");
         }}
       />
     );
   }
-
 
   if (tela === "cadastro") {
     return (
@@ -701,7 +563,6 @@ export default function Home() {
   }
 
   return (
-
     <div
       ref={containerRef}
       style={{
@@ -712,12 +573,8 @@ export default function Home() {
         overflowY: "auto"
       }}
     >
-
-
-
       {/* GRID */}
       <div style={{ overflowX: isMobile ? "hidden" : "auto" }}>
-
         <div style={{ position: "relative" }}>
           <div
             style={{
@@ -740,13 +597,12 @@ export default function Home() {
             {cadeiras}
 
             {/* LINHAS VERMELHAS */}
-
             <div style={{
               position: "absolute",
               top: 0,
               bottom: 0,
-              left: "22.7%",   // posição do corredor
-              transform: "translateX(-50%)", // ✅ CENTRALIZA
+              left: "22.7%",
+              transform: "translateX(-50%)",
               width: 4,
               background: "red"
             }} />
@@ -770,14 +626,9 @@ export default function Home() {
               width: 4,
               background: "red"
             }} />
-
-
-          </div> {/* fecha o position: relative */}
-
+          </div>
         </div>
       </div>
-
-
 
       {/* TÍTULOS */}
       {!isMobile && (
@@ -785,13 +636,11 @@ export default function Home() {
           style={{
             display: "grid",
             gridTemplateColumns: `
-            
-repeat(5, 1fr) 4px
-  repeat(6, 1fr) 4px
-  repeat(6, 1fr) 4px
-  repeat(5, 1fr)
-
-          `,
+              repeat(5, 1fr) 4px
+              repeat(6, 1fr) 4px
+              repeat(6, 1fr) 4px
+              repeat(5, 1fr)
+            `,
             marginTop: 6,
             marginBottom: 20,
             fontSize: 16,
@@ -799,17 +648,10 @@ repeat(5, 1fr) 4px
             color: "#ccc",
           }}
         >
-
           <button
-            onClick={() => {
-              irParaPresetCameraPalco(3);
-              // FUTURO:
-              // irParaPresetCamera2(3)
-            }}
-
+            onClick={() => irParaPresetCameraPalco(3)}
             onMouseEnter={(e) => e.currentTarget.style.background = "#2a2a2a"}
             onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-
             style={{
               gridColumn: "1 / span 5",
               textAlign: "center",
@@ -827,15 +669,9 @@ repeat(5, 1fr) 4px
           </button>
 
           <button
-            onClick={() => {
-              irParaPresetCameraPalco(2);
-              // FUTURO:
-              // irParaPresetCamera2(3)
-            }}
-
+            onClick={() => irParaPresetCameraPalco(2)}
             onMouseEnter={(e) => e.currentTarget.style.background = "#2a2a2a"}
             onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-
             style={{
               gridColumn: "7 / span 13",
               textAlign: "center",
@@ -853,15 +689,9 @@ repeat(5, 1fr) 4px
           </button>
 
           <button
-            onClick={() => {
-              irParaPresetCameraPalco(4);
-              // FUTURO:
-              // irParaPresetCamera2(3)
-            }}
-
+            onClick={() => irParaPresetCameraPalco(4)}
             onMouseEnter={(e) => e.currentTarget.style.background = "#2a2a2a"}
             onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
-
             style={{
               gridColumn: "21 / span 5",
               textAlign: "center",
@@ -877,7 +707,6 @@ repeat(5, 1fr) 4px
           >
             4 - MESA (DIREITO)
           </button>
-
         </div>
       )}
 
@@ -889,8 +718,6 @@ repeat(5, 1fr) 4px
           flexDirection: isMobile ? "column" : "row",
         }}
       >
-
-        {/* ✅ BOTÃO VOLTAR */}
         <button
           onClick={() => setTela("menu")}
           style={{
@@ -982,24 +809,16 @@ repeat(5, 1fr) 4px
       >
         {fotos.map((foto) => (
           <div key={foto.id} style={{ position: "relative" }}>
-
             <img
               src={foto.url}
-
               onClick={() => {
-                // ✅ se já está selecionada → desmarca
                 if (selecionada === foto.url) {
-                  setSelecionada(null)
-                  return
+                  setSelecionada(null);
+                  return;
                 }
-
-                // ✅ senão → seleciona
-                setSelecionada(foto.url)
+                setSelecionada(foto.url);
               }}
-
-
               onDragStart={(e) => e.preventDefault()}
-
               style={{
                 width: isMobile ? 50 : 60,
                 height: isMobile ? 50 : 60,
@@ -1010,7 +829,6 @@ repeat(5, 1fr) 4px
                 touchAction: "none"
               }}
             />
-
 
             {usuario?.admin && (
               <button
@@ -1032,14 +850,9 @@ repeat(5, 1fr) 4px
                 ✕
               </button>
             )}
-
           </div>
         ))}
       </div>
-
-
-
-
     </div>
   );
 }
